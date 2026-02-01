@@ -31,7 +31,8 @@ export declare class PdfjsViewerElement extends HTMLElement {
     private hotspotsBaseTransform;
     private hotspotsRaf;
     private hotspotsRetryTimer;
-    private hotspotsHostPrevDisplay;
+    private hotspotsHostPrevOpacity;
+    private hotspotsHostPrevPointerEvents;
     private hotspotsIframeEnabled;
     private hotspotsIframeClickBound;
     private hotspotsHostClickBound;

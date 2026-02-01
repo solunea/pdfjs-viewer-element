@@ -86,7 +86,8 @@ export class PdfjsViewerElement extends HTMLElement {
   private hotspotsBaseTransform: string | null = null
   private hotspotsRaf = 0
   private hotspotsRetryTimer: number | null = null
-  private hotspotsHostPrevDisplay: string | null = null
+  private hotspotsHostPrevOpacity: string | null = null
+  private hotspotsHostPrevPointerEvents: string | null = null
   private hotspotsIframeEnabled = false
   private hotspotsIframeClickBound = false
   private hotspotsHostClickBound = false
@@ -411,20 +412,30 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     const el = this.hotspotsEl
     if (!el) return
 
-    if (this.hotspotsHostPrevDisplay === null) {
-      this.hotspotsHostPrevDisplay = el.style.display
+    if (this.hotspotsHostPrevOpacity === null) {
+      this.hotspotsHostPrevOpacity = el.style.opacity
+    }
+    if (this.hotspotsHostPrevPointerEvents === null) {
+      this.hotspotsHostPrevPointerEvents = el.style.pointerEvents
     }
 
-    el.style.display = 'none'
+    el.style.opacity = '0'
+    el.style.pointerEvents = 'none'
   }
 
   private showHostHotspots() {
     const el = this.hotspotsEl
     if (!el) return
-    if (this.hotspotsHostPrevDisplay === null) return
+    if (this.hotspotsHostPrevOpacity === null && this.hotspotsHostPrevPointerEvents === null) return
 
-    el.style.display = this.hotspotsHostPrevDisplay
-    this.hotspotsHostPrevDisplay = null
+    if (this.hotspotsHostPrevOpacity !== null) {
+      el.style.opacity = this.hotspotsHostPrevOpacity
+      this.hotspotsHostPrevOpacity = null
+    }
+    if (this.hotspotsHostPrevPointerEvents !== null) {
+      el.style.pointerEvents = this.hotspotsHostPrevPointerEvents
+      this.hotspotsHostPrevPointerEvents = null
+    }
   }
 
   private ensureIframeHotspotsStyle(doc: Document) {
@@ -436,7 +447,7 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     style.textContent = [
       '.pdfjs-viewer-element-hotspots-layer{position:absolute;inset:0;z-index:9999;pointer-events:none}',
       '.pdfjs-viewer-element-hotspots-layer .hotspots{position:absolute;inset:0;pointer-events:none}',
-      '.pdfjs-viewer-element-hotspots-layer .hotspots .hotspot{pointer-events:auto}',
+      '.pdfjs-viewer-element-hotspots-layer .hotspots .hotspot{pointer-events:auto;position:absolute;}',
     ].join('')
     doc.head.appendChild(style)
   }
