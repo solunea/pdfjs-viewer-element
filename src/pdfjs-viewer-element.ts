@@ -64,6 +64,10 @@ export class PdfjsViewerElement extends HTMLElement {
   private hotspotsBaseTransform: string | null = null
   private hotspotsRaf = 0
   private hotspotsRetryTimer: number | null = null
+  private hotspotsHostPrevDisplay: string | null = null
+  private hotspotsIframeEnabled = false
+  private hotspotsIframeClickBound = false
+  private hotspotsHostObserver: MutationObserver | null = null
   private readonly onHotspotsSlotChange = () => this.setupPdfHotspotsAnchoring()
   private readonly onIframeLoadForHotspots = () => this.setupPdfHotspotsAnchoring()
 
@@ -283,6 +287,8 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     const hotspotsEl = this.hotspotsEl
     if (!hotspotsEl) return
 
+    if (this.hotspotsIframeEnabled) return
+
     this.computeHotspotsBaseTransform()
     if (this.hotspotsBaseTransform === null) return
 
@@ -315,20 +321,28 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     this.hotspotsEl = hotspotsEl
     this.hotspotsBaseTransform = null
 
-    const scrollEl = this.resolveHotspotsScrollEl()
-    if (scrollEl) {
-      this.attachHotspotsToScrollEl(scrollEl)
-    }
-
-    const retry = () => {
-      const next = this.resolveHotspotsScrollEl()
-      if (next) this.attachHotspotsToScrollEl(next)
-      this.updatePdfHotspotsAnchoring()
-    }
-
     if (this.hotspotsRetryTimer) {
       clearInterval(this.hotspotsRetryTimer)
       this.hotspotsRetryTimer = null
+    }
+
+    const retry = () => {
+      const iframeReady = this.trySetupHotspotsInIframe()
+      if (iframeReady) {
+        if (this.hotspotsRetryTimer) {
+          clearInterval(this.hotspotsRetryTimer)
+          this.hotspotsRetryTimer = null
+        }
+        return
+      }
+
+      if (this.hotspotsIframeEnabled) {
+        this.teardownHotspotsInIframe()
+      }
+
+      const next = this.resolveHotspotsScrollEl()
+      if (next) this.attachHotspotsToScrollEl(next)
+      this.updatePdfHotspotsAnchoring()
     }
 
     this.hotspotsRetryTimer = window.setInterval(retry, 250)
@@ -353,10 +367,217 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
       this.hotspotsRetryTimer = null
     }
 
+    this.teardownHotspotsInIframe()
+
     this.detachHotspotsFromScrollEl()
     this.hotspotsEl = null
     this.hotspotsIframeDoc = null
     this.hotspotsBaseTransform = null
+  }
+
+  private getHotspotKey(el: Element) {
+    return (el.getAttribute('slot') || el.getAttribute('id') || el.getAttribute('data-hotspot-id') || '').trim()
+  }
+
+  private hideHostHotspots() {
+    const el = this.hotspotsEl
+    if (!el) return
+
+    if (this.hotspotsHostPrevDisplay === null) {
+      this.hotspotsHostPrevDisplay = el.style.display
+    }
+
+    el.style.display = 'none'
+  }
+
+  private showHostHotspots() {
+    const el = this.hotspotsEl
+    if (!el) return
+    if (this.hotspotsHostPrevDisplay === null) return
+
+    el.style.display = this.hotspotsHostPrevDisplay
+    this.hotspotsHostPrevDisplay = null
+  }
+
+  private ensureIframeHotspotsStyle(doc: Document) {
+    const existing = doc.getElementById('pdfjs-viewer-element-hotspots-style') as HTMLStyleElement | null
+    if (existing) return
+
+    const style = doc.createElement('style')
+    style.id = 'pdfjs-viewer-element-hotspots-style'
+    style.textContent = [
+      '.pdfjs-viewer-element-hotspots-layer{position:absolute;inset:0;z-index:9999;pointer-events:none}',
+      '.pdfjs-viewer-element-hotspots-layer .hotspots{position:absolute;inset:0;pointer-events:none}',
+      '.pdfjs-viewer-element-hotspots-layer .hotspots .hotspot{pointer-events:auto}',
+    ].join('')
+    doc.head.appendChild(style)
+  }
+
+  private clearIframeHotspotsLayers(doc: Document) {
+    doc.querySelectorAll('.pdfjs-viewer-element-hotspots-layer').forEach((el) => el.remove())
+  }
+
+  private syncHotspotsToIframe(doc: Document) {
+    const hotspotsEl = this.hotspotsEl
+    if (!hotspotsEl) return false
+
+    const pages = Array.from(doc.querySelectorAll('.page[data-page-number]')) as HTMLElement[]
+    if (!pages.length) return false
+
+    const hotspotNodes = Array.from(hotspotsEl.querySelectorAll('.hotspot')) as HTMLElement[]
+    if (!hotspotNodes.length) return true
+
+    let containerPage = (hotspotsEl.getAttribute('data-page') || '').trim()
+    if (!containerPage) containerPage = '1'
+
+    const needsPerPage = hotspotNodes.some((n) => {
+      const p = (n.getAttribute('data-page') || n.getAttribute('data-page-number') || (n as any).dataset?.page || '').toString().trim()
+      return !!p
+    })
+
+    const layersByPage = new Map<string, HTMLElement>()
+
+    const getLayerForPage = (pageNumber: string) => {
+      const n = (pageNumber || '1').trim() || '1'
+      const cached = layersByPage.get(n)
+      if (cached) return cached
+
+      const pageEl = (doc.querySelector(`.page[data-page-number="${CSS.escape(n)}"]`) || pages[0]) as HTMLElement
+      let layer = pageEl.querySelector(':scope > .pdfjs-viewer-element-hotspots-layer') as HTMLElement | null
+      if (!layer) {
+        if (getComputedStyle(pageEl).position === 'static') {
+          pageEl.style.position = 'relative'
+        }
+        layer = doc.createElement('div')
+        layer.className = 'pdfjs-viewer-element-hotspots-layer'
+        pageEl.appendChild(layer)
+      }
+
+      layer.innerHTML = ''
+      layersByPage.set(n, layer)
+      return layer
+    }
+
+    if (!needsPerPage) {
+      getLayerForPage(containerPage)
+    }
+
+    hotspotNodes.forEach((node) => {
+      const key = this.getHotspotKey(node)
+      const p = needsPerPage
+        ? (node.getAttribute('data-page') || node.getAttribute('data-page-number') || (node as any).dataset?.page || '').toString().trim() || containerPage
+        : containerPage
+
+      const layer = getLayerForPage(p)
+      let hotspotsContainer = layer.querySelector(':scope > .hotspots') as HTMLElement | null
+      if (!hotspotsContainer) {
+        hotspotsContainer = doc.createElement('div')
+        hotspotsContainer.className = 'hotspots'
+        layer.appendChild(hotspotsContainer)
+      }
+
+      const clone = node.cloneNode(true) as HTMLElement
+      if (key) clone.setAttribute('data-pdfjs-viewer-element-hotspot-key', key)
+      hotspotsContainer.appendChild(clone)
+    })
+
+    return true
+  }
+
+  private bindIframeHotspotsClick(doc: Document) {
+    if (this.hotspotsIframeClickBound) return
+
+    const onClick = (ev: Event) => {
+      const target = ev.target as Element | null
+      if (!target) return
+      const hotspot = target.closest('.pdfjs-viewer-element-hotspots-layer .hotspot') as HTMLElement | null
+      if (!hotspot) return
+
+      const key = (hotspot.getAttribute('data-pdfjs-viewer-element-hotspot-key') || this.getHotspotKey(hotspot)).trim()
+      if (!key) return
+
+      const hostHotspotsEl = this.hotspotsEl
+      const orig = hostHotspotsEl?.querySelector(`.hotspot[slot="${CSS.escape(key)}"], .hotspot#${CSS.escape(key)}, .hotspot[data-hotspot-id="${CSS.escape(key)}"]`) as HTMLElement | null
+      if (orig && typeof (orig as any).click === 'function') {
+        ;(orig as any).click()
+      }
+
+      this.dispatchEvent(new CustomEvent('hotspot-click', { detail: { key }, bubbles: true, composed: true }))
+    }
+
+    doc.addEventListener('click', onClick)
+    ;(doc as any).__pdfjsViewerElementHotspotsClick = onClick
+    this.hotspotsIframeClickBound = true
+  }
+
+  private bindHostHotspotsObserver() {
+    const hotspotsEl = this.hotspotsEl
+    if (!hotspotsEl) return
+    if (this.hotspotsHostObserver) return
+
+    this.hotspotsHostObserver = new MutationObserver(() => {
+      if (!this.hotspotsIframeEnabled) return
+      const doc = this.hotspotsIframeDoc
+      if (!doc) return
+      this.clearIframeHotspotsLayers(doc)
+      this.syncHotspotsToIframe(doc)
+    })
+
+    this.hotspotsHostObserver.observe(hotspotsEl, { attributes: true, childList: true, subtree: true })
+  }
+
+  private trySetupHotspotsInIframe() {
+    const iframe = this.iframe
+    if (!iframe) return false
+
+    let doc: Document | null = null
+    try {
+      doc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document) || null
+    } catch {
+      doc = null
+    }
+    if (!doc || !doc.documentElement) return false
+
+    this.hotspotsIframeDoc = doc
+
+    this.ensureIframeHotspotsStyle(doc)
+    this.clearIframeHotspotsLayers(doc)
+    const ok = this.syncHotspotsToIframe(doc)
+    if (!ok) return false
+
+    this.detachHotspotsFromScrollEl()
+    this.hotspotsBaseTransform = null
+
+    this.hotspotsIframeEnabled = true
+    this.hideHostHotspots()
+    this.bindHostHotspotsObserver()
+    this.bindIframeHotspotsClick(doc)
+    return true
+  }
+
+  private teardownHotspotsInIframe() {
+    if (!this.hotspotsIframeEnabled && !this.hotspotsHostObserver && !this.hotspotsIframeDoc) {
+      return
+    }
+
+    const doc = this.hotspotsIframeDoc
+    if (doc) {
+      const onClick = (doc as any).__pdfjsViewerElementHotspotsClick
+      if (typeof onClick === 'function') {
+        doc.removeEventListener('click', onClick)
+      }
+      ;(doc as any).__pdfjsViewerElementHotspotsClick = null
+      this.clearIframeHotspotsLayers(doc)
+    }
+
+    if (this.hotspotsHostObserver) {
+      this.hotspotsHostObserver.disconnect()
+      this.hotspotsHostObserver = null
+    }
+
+    this.hotspotsIframeClickBound = false
+    this.hotspotsIframeEnabled = false
+    this.showHostHotspots()
   }
 
   private getFullPath(path: string) {
