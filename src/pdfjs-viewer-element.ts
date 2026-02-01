@@ -420,7 +420,8 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
       this.hotspotsHostPrevPointerEvents = el.style.pointerEvents
     }
 
-    el.style.display = 'none'
+    el.style.opacity = '0'
+    el.style.pointerEvents = 'none'
   }
 
   private showHostHotspots() {
