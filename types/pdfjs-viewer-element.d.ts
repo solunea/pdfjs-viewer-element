@@ -4,6 +4,24 @@ export declare const ViewerCssTheme: {
     readonly DARK: 2;
 };
 export declare const hardRefreshAttributes: string[];
+export type PdfjsViewerElementHotspotClickMode = 'in-iframe' | 'overlay';
+export interface PdfjsViewerElementHotspotClickRect {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+}
+export interface PdfjsViewerElementHotspotClickDetail {
+    key: string;
+    pageNumber?: string | number;
+    rect?: PdfjsViewerElementHotspotClickRect | null;
+    clientX?: number | null;
+    clientY?: number | null;
+    source?: 'iframe' | 'overlay';
+    mode: PdfjsViewerElementHotspotClickMode;
+}
 export declare class PdfjsViewerElement extends HTMLElement {
     constructor();
     iframe: PdfjsViewerElementIframe;
@@ -16,6 +34,8 @@ export declare class PdfjsViewerElement extends HTMLElement {
     private hotspotsHostPrevDisplay;
     private hotspotsIframeEnabled;
     private hotspotsIframeClickBound;
+    private hotspotsHostClickBound;
+    private hotspotsHostClickEl;
     private hotspotsHostObserver;
     private readonly onHotspotsSlotChange;
     private readonly onIframeLoadForHotspots;
@@ -43,6 +63,8 @@ export declare class PdfjsViewerElement extends HTMLElement {
     private clearIframeHotspotsLayers;
     private syncHotspotsToIframe;
     private bindIframeHotspotsClick;
+    private bindHostHotspotsClick;
+    private unbindHostHotspotsClick;
     private bindHostHotspotsObserver;
     private trySetupHotspotsInIframe;
     private teardownHotspotsInIframe;
