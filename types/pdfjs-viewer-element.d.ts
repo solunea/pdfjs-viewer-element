@@ -9,6 +9,7 @@ export declare class PdfjsViewerElement extends HTMLElement {
     iframe: PdfjsViewerElementIframe;
     static get observedAttributes(): string[];
     connectedCallback(): void;
+    disconnectedCallback(): void;
     attributeChangedCallback(name: string): void;
     private onIframeReady;
     private getIframeSrc;

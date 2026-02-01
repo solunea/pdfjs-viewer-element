@@ -42,14 +42,38 @@ export class PdfjsViewerElement extends HTMLElement {
     super()
     const shadowRoot = this.attachShadow({ mode: 'open' })
     const template = document.createElement('template')
+
     template.innerHTML = `
-      <style>:host{width:100%;display:block;overflow:hidden}:host iframe{height:100%}</style>
+      <style>
+        :host{width:100%;display:block;overflow:hidden;position:relative}
+        :host iframe{height:100%;position:relative;z-index:0}
+        #hotspots-overlay{position:absolute;inset:0;z-index:1;pointer-events:none}
+        ::slotted(.hotspots){position:absolute;inset:0;pointer-events:auto}
+      </style>
       <iframe frameborder="0" width="100%" loading="lazy" title="${this.getAttribute('iframe-title') || DEFAULTS.iframeTitle}"></iframe>
+      <div id="hotspots-overlay"><slot name="hotspots"></slot></div>
     `
     shadowRoot.appendChild(template.content.cloneNode(true))
   }
 
   public iframe!: PdfjsViewerElementIframe
+
+  private hotspotsEl: HTMLElement | null = null
+  private hotspotsIframeDoc: Document | null = null
+  private hotspotsScrollEl: HTMLElement | Document | null = null
+  private hotspotsBaseTransform: string | null = null
+  private hotspotsRaf = 0
+  private hotspotsRetryTimer: number | null = null
+  private readonly onHotspotsSlotChange = () => this.setupPdfHotspotsAnchoring()
+  private readonly onIframeLoadForHotspots = () => this.setupPdfHotspotsAnchoring()
+
+  private readonly onHotspotsScroll = () => {
+    if (this.hotspotsRaf) cancelAnimationFrame(this.hotspotsRaf)
+    this.hotspotsRaf = requestAnimationFrame(() => {
+      this.hotspotsRaf = 0
+      this.updatePdfHotspotsAnchoring()
+    })
+  }
 
   static get observedAttributes() {
     return [
@@ -61,15 +85,29 @@ export class PdfjsViewerElement extends HTMLElement {
 
   connectedCallback() {
     this.iframe = this.shadowRoot?.querySelector('iframe') as PdfjsViewerElementIframe
+
+    const slot = this.shadowRoot?.querySelector('slot[name="hotspots"]') as HTMLSlotElement | null
+    slot?.addEventListener('slotchange', this.onHotspotsSlotChange)
+    this.iframe?.addEventListener('load', this.onIframeLoadForHotspots)
+    this.setupPdfHotspotsAnchoring()
+
     document.addEventListener('webviewerloaded', async () => {
       this.setCssTheme(this.getCssThemeOption())
       this.injectExtraStylesLinks(this.getAttribute('viewer-extra-styles-urls') ?? DEFAULTS.viewerExtraStylesUrls)
       this.setViewerExtraStyles(this.getAttribute('viewer-extra-styles') ?? DEFAULTS.viewerExtraStyles)
       if (this.getAttribute('src') !== DEFAULTS.src) this.iframe.contentWindow?.PDFViewerApplicationOptions?.set('defaultUrl', '')
+
       this.iframe.contentWindow?.PDFViewerApplicationOptions?.set('disablePreferences', true)
       this.iframe.contentWindow?.PDFViewerApplicationOptions?.set('pdfBugEnabled', true)
       this.iframe.contentWindow?.PDFViewerApplicationOptions?.set('eventBusDispatchToDOM', true)
     })
+  }
+
+  disconnectedCallback() {
+    const slot = this.shadowRoot?.querySelector('slot[name="hotspots"]') as HTMLSlotElement | null
+    slot?.removeEventListener('slotchange', this.onHotspotsSlotChange)
+    this.iframe?.removeEventListener('load', this.onIframeLoadForHotspots)
+    this.teardownPdfHotspotsAnchoring()
   }
 
   attributeChangedCallback(name: string) {
@@ -131,6 +169,194 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     this.iframe = this.shadowRoot?.querySelector('iframe') as PdfjsViewerElementIframe
     this.iframe.src = src
     this.iframe.setAttribute('title', this.getAttribute('iframe-title') || DEFAULTS.iframeTitle)
+    this.iframe?.addEventListener('load', this.onIframeLoadForHotspots)
+    this.setupPdfHotspotsAnchoring()
+  }
+
+  private getHotspotsElement() {
+    const el = this.querySelector('.hotspots') as HTMLElement | null
+    if (!el) return null
+
+    if (!el.getAttribute('slot')) {
+      el.setAttribute('slot', 'hotspots')
+    }
+
+    return el
+  }
+
+  private resolveHotspotsScrollEl() {
+    this.hotspotsIframeDoc = null
+
+    const root = this.shadowRoot || this
+    const iframe = (this.iframe || root.querySelector('iframe')) as PdfjsViewerElementIframe | null
+    if (!iframe) return null
+
+    try {
+      this.hotspotsIframeDoc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document) || null
+    } catch {
+      this.hotspotsIframeDoc = null
+    }
+
+    const doc = this.hotspotsIframeDoc
+    if (!doc || typeof doc.querySelector !== 'function') return null
+
+    const vc = (doc.querySelector('#viewerContainer') || doc.querySelector('.viewerContainer')) as HTMLElement | null
+    if (vc) return vc
+
+    return doc
+  }
+
+  private attachHotspotsToScrollEl(scrollEl: HTMLElement | Document) {
+    if (scrollEl === this.hotspotsScrollEl) return
+
+    this.detachHotspotsFromScrollEl()
+    this.hotspotsScrollEl = scrollEl
+
+    if ((scrollEl as Document).nodeType === 9) {
+      scrollEl.addEventListener('scroll', this.onHotspotsScroll, true)
+      return
+    }
+
+    try {
+      ;(scrollEl as HTMLElement).addEventListener('scroll', this.onHotspotsScroll, { passive: true })
+    } catch {
+      ;(scrollEl as HTMLElement).addEventListener('scroll', this.onHotspotsScroll, true)
+    }
+  }
+
+  private detachHotspotsFromScrollEl() {
+    const scrollEl = this.hotspotsScrollEl
+    if (!scrollEl) return
+
+    if ((scrollEl as Document).nodeType === 9) {
+      scrollEl.removeEventListener('scroll', this.onHotspotsScroll, true)
+    } else {
+      ;(scrollEl as HTMLElement).removeEventListener('scroll', this.onHotspotsScroll)
+    }
+
+    this.hotspotsScrollEl = null
+  }
+
+  private getHotspotsScrollOffsets() {
+    const scrollEl = this.hotspotsScrollEl
+    const doc = this.hotspotsIframeDoc
+
+    if (doc && typeof doc.querySelector === 'function') {
+      const vc = (doc.querySelector('#viewerContainer') || doc.querySelector('.viewerContainer')) as HTMLElement | null
+      if (vc && typeof vc.scrollTop === 'number') {
+        return { top: vc.scrollTop || 0, left: vc.scrollLeft || 0 }
+      }
+
+      const se = doc.scrollingElement || doc.documentElement || doc.body
+      if (se && typeof (se as any).scrollTop === 'number') {
+        return { top: (se as any).scrollTop || 0, left: (se as any).scrollLeft || 0 }
+      }
+    }
+
+    if (scrollEl && (scrollEl as any).nodeType !== 9 && typeof (scrollEl as any).scrollTop === 'number') {
+      return { top: (scrollEl as any).scrollTop || 0, left: (scrollEl as any).scrollLeft || 0 }
+    }
+
+    return { top: 0, left: 0 }
+  }
+
+  private computeHotspotsBaseTransform() {
+    if (this.hotspotsBaseTransform !== null) return
+
+    const hotspotsEl = this.hotspotsEl
+    if (!hotspotsEl) return
+
+    const isConnected = typeof hotspotsEl.isConnected === 'boolean'
+      ? hotspotsEl.isConnected
+      : !!(document.documentElement && document.documentElement.contains(hotspotsEl))
+    if (!isConnected) return
+
+    try {
+      const t = String(getComputedStyle(hotspotsEl).transform || '').trim()
+      this.hotspotsBaseTransform = (t && t !== 'none') ? t : ''
+    } catch {
+      this.hotspotsBaseTransform = ''
+    }
+  }
+
+  private updatePdfHotspotsAnchoring() {
+    const hotspotsEl = this.hotspotsEl
+    if (!hotspotsEl) return
+
+    this.computeHotspotsBaseTransform()
+    if (this.hotspotsBaseTransform === null) return
+
+    const off = this.getHotspotsScrollOffsets()
+    const st = off.top
+    const sl = off.left
+    hotspotsEl.style.transform = (this.hotspotsBaseTransform ? (this.hotspotsBaseTransform + ' ') : '') + `translate(${-sl}px, ${-st}px)`
+
+    const $any = (window as any).$
+    if (typeof $any === 'function') {
+      const open = hotspotsEl.querySelectorAll('.hotspot[aria-describedby]')
+      open.forEach((h) => {
+        const pop = $any(h).data('bs.popover')
+        if (pop && typeof pop.update === 'function') {
+          pop.update()
+        } else if (pop && pop._popper) {
+          pop._popper.scheduleUpdate()
+        }
+      })
+    }
+  }
+
+  private setupPdfHotspotsAnchoring() {
+    const hotspotsEl = this.getHotspotsElement()
+    if (!hotspotsEl) {
+      this.teardownPdfHotspotsAnchoring()
+      return
+    }
+
+    this.hotspotsEl = hotspotsEl
+    this.hotspotsBaseTransform = null
+
+    const scrollEl = this.resolveHotspotsScrollEl()
+    if (scrollEl) {
+      this.attachHotspotsToScrollEl(scrollEl)
+    }
+
+    const retry = () => {
+      const next = this.resolveHotspotsScrollEl()
+      if (next) this.attachHotspotsToScrollEl(next)
+      this.updatePdfHotspotsAnchoring()
+    }
+
+    if (this.hotspotsRetryTimer) {
+      clearInterval(this.hotspotsRetryTimer)
+      this.hotspotsRetryTimer = null
+    }
+
+    this.hotspotsRetryTimer = window.setInterval(retry, 250)
+    setTimeout(() => {
+      if (this.hotspotsRetryTimer) {
+        clearInterval(this.hotspotsRetryTimer)
+        this.hotspotsRetryTimer = null
+      }
+    }, 30000)
+
+    retry()
+  }
+
+  private teardownPdfHotspotsAnchoring() {
+    if (this.hotspotsRaf) {
+      cancelAnimationFrame(this.hotspotsRaf)
+      this.hotspotsRaf = 0
+    }
+
+    if (this.hotspotsRetryTimer) {
+      clearInterval(this.hotspotsRetryTimer)
+      this.hotspotsRetryTimer = null
+    }
+
+    this.detachHotspotsFromScrollEl()
+    this.hotspotsEl = null
+    this.hotspotsIframeDoc = null
+    this.hotspotsBaseTransform = null
   }
 
   private getFullPath(path: string) {
