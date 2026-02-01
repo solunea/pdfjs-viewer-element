@@ -35,6 +35,7 @@ export declare class PdfjsViewerElement extends HTMLElement {
     private hotspotsHostPrevPointerEvents;
     private hotspotsIframeEnabled;
     private hotspotsIframeClickBound;
+    private hotspotsIframeHoverBound;
     private hotspotsHostClickBound;
     private hotspotsHostClickEl;
     private hotspotsHostObserver;
@@ -64,6 +65,7 @@ export declare class PdfjsViewerElement extends HTMLElement {
     private clearIframeHotspotsLayers;
     private syncHotspotsToIframe;
     private bindIframeHotspotsClick;
+    private bindIframeHotspotsHover;
     private bindHostHotspotsClick;
     private unbindHostHotspotsClick;
     private bindHostHotspotsObserver;

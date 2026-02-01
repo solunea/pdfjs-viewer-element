@@ -90,6 +90,7 @@ export class PdfjsViewerElement extends HTMLElement {
   private hotspotsHostPrevPointerEvents: string | null = null
   private hotspotsIframeEnabled = false
   private hotspotsIframeClickBound = false
+  private hotspotsIframeHoverBound = false
   private hotspotsHostClickBound = false
   private hotspotsHostClickEl: HTMLElement | null = null
   private hotspotsHostObserver: MutationObserver | null = null
@@ -595,6 +596,142 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     this.hotspotsIframeClickBound = true
   }
 
+  private bindIframeHotspotsHover(doc: Document) {
+    if (this.hotspotsIframeHoverBound) return
+
+    const onOver = (ev: Event) => {
+      const mev = ev as MouseEvent
+      const target = mev.target as Element | null
+      if (!target) return
+      const hotspot = target.closest('.pdfjs-viewer-element-hotspots-layer .hotspot') as HTMLElement | null
+      if (!hotspot) return
+
+      const related = mev.relatedTarget as Element | null
+      if (related && hotspot.contains(related)) return
+
+      const key = (hotspot.getAttribute('data-pdfjs-viewer-element-hotspot-key') || this.getHotspotKey(hotspot)).trim()
+      if (!key) return
+
+      let pageNumber: string | null = null
+      try {
+        const pageEl = hotspot.closest('.page[data-page-number]') as HTMLElement | null
+        pageNumber = pageEl?.getAttribute('data-page-number') || null
+      } catch {
+        pageNumber = null
+      }
+
+      const pageNumberNormalized: string | number | undefined = pageNumber
+        ? (Number.isFinite(Number(pageNumber)) ? Number(pageNumber) : pageNumber)
+        : undefined
+
+      let rect: PdfjsViewerElementHotspotClickRect | null = null
+      let clientX: number | null = null
+      let clientY: number | null = null
+      try {
+        const iframe = this.iframe
+        if (iframe) {
+          const cloneRect = hotspot.getBoundingClientRect()
+          const iframeRect = iframe.getBoundingClientRect()
+          rect = {
+            left: iframeRect.left + cloneRect.left,
+            top: iframeRect.top + cloneRect.top,
+            right: iframeRect.left + cloneRect.right,
+            bottom: iframeRect.top + cloneRect.bottom,
+            width: cloneRect.width,
+            height: cloneRect.height,
+          }
+          clientX = rect.left + rect.width / 2
+          clientY = rect.top + rect.height / 2
+        }
+      } catch {
+        rect = null
+        clientX = null
+        clientY = null
+      }
+
+      const detail: PdfjsViewerElementHotspotClickDetail = {
+        key,
+        pageNumber: pageNumberNormalized,
+        rect,
+        clientX,
+        clientY,
+        source: 'iframe',
+        mode: 'in-iframe',
+      }
+
+      this.dispatchEvent(new CustomEvent('hotspot-enter', { detail, bubbles: true, composed: true }))
+    }
+
+    const onOut = (ev: Event) => {
+      const mev = ev as MouseEvent
+      const target = mev.target as Element | null
+      if (!target) return
+      const hotspot = target.closest('.pdfjs-viewer-element-hotspots-layer .hotspot') as HTMLElement | null
+      if (!hotspot) return
+
+      const related = mev.relatedTarget as Element | null
+      if (related && hotspot.contains(related)) return
+
+      const key = (hotspot.getAttribute('data-pdfjs-viewer-element-hotspot-key') || this.getHotspotKey(hotspot)).trim()
+      if (!key) return
+
+      let pageNumber: string | null = null
+      try {
+        const pageEl = hotspot.closest('.page[data-page-number]') as HTMLElement | null
+        pageNumber = pageEl?.getAttribute('data-page-number') || null
+      } catch {
+        pageNumber = null
+      }
+
+      const pageNumberNormalized: string | number | undefined = pageNumber
+        ? (Number.isFinite(Number(pageNumber)) ? Number(pageNumber) : pageNumber)
+        : undefined
+
+      let rect: PdfjsViewerElementHotspotClickRect | null = null
+      let clientX: number | null = null
+      let clientY: number | null = null
+      try {
+        const iframe = this.iframe
+        if (iframe) {
+          const cloneRect = hotspot.getBoundingClientRect()
+          const iframeRect = iframe.getBoundingClientRect()
+          rect = {
+            left: iframeRect.left + cloneRect.left,
+            top: iframeRect.top + cloneRect.top,
+            right: iframeRect.left + cloneRect.right,
+            bottom: iframeRect.top + cloneRect.bottom,
+            width: cloneRect.width,
+            height: cloneRect.height,
+          }
+          clientX = rect.left + rect.width / 2
+          clientY = rect.top + rect.height / 2
+        }
+      } catch {
+        rect = null
+        clientX = null
+        clientY = null
+      }
+
+      const detail: PdfjsViewerElementHotspotClickDetail = {
+        key,
+        pageNumber: pageNumberNormalized,
+        rect,
+        clientX,
+        clientY,
+        source: 'iframe',
+        mode: 'in-iframe',
+      }
+
+      this.dispatchEvent(new CustomEvent('hotspot-leave', { detail, bubbles: true, composed: true }))
+    }
+
+    doc.addEventListener('mouseover', onOver)
+    doc.addEventListener('mouseout', onOut)
+    ;(doc as any).__pdfjsViewerElementHotspotsOver = onOver
+    ;(doc as any).__pdfjsViewerElementHotspotsOut = onOut
+    this.hotspotsIframeHoverBound = true
+  }
+
   private bindHostHotspotsClick() {
     const hotspotsEl = this.hotspotsEl
     if (!hotspotsEl) return
@@ -702,6 +839,7 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     this.hideHostHotspots()
     this.bindHostHotspotsObserver()
     this.bindIframeHotspotsClick(doc)
+    this.bindIframeHotspotsHover(doc)
     return true
   }
 
@@ -717,6 +855,19 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
         doc.removeEventListener('click', onClick)
       }
       ;(doc as any).__pdfjsViewerElementHotspotsClick = null
+
+      const onOver = (doc as any).__pdfjsViewerElementHotspotsOver
+      if (typeof onOver === 'function') {
+        doc.removeEventListener('mouseover', onOver)
+      }
+      ;(doc as any).__pdfjsViewerElementHotspotsOver = null
+
+      const onOut = (doc as any).__pdfjsViewerElementHotspotsOut
+      if (typeof onOut === 'function') {
+        doc.removeEventListener('mouseout', onOut)
+      }
+      ;(doc as any).__pdfjsViewerElementHotspotsOut = null
+
       this.clearIframeHotspotsLayers(doc)
     }
 
@@ -726,6 +877,7 @@ ${nameddest ? '&nameddest=' + nameddest : ''}`
     }
 
     this.hotspotsIframeClickBound = false
+    this.hotspotsIframeHoverBound = false
     this.hotspotsIframeEnabled = false
     this.showHostHotspots()
   }
